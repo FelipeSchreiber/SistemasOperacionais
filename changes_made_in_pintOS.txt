@@ -78,7 +78,7 @@ schedule (void)
 /*Function that puts some thread to sleep*/
 #void thread_sleep (struct thread *T,int64_t wakingTime)
 #{
-  enum intr_level my_old_level = intr_disable (); 
+#  enum intr_level my_old_level = intr_disable (); 
  /*old_level should be INTR_ON, if not this code wont be executed due to the previous assert in timer_sleep()*/
 #  T->waking_time = wakingTime;
 #  list_insert_ordered(&sleeping_list,&(T->sleeping_elem),(list_less_func*)my_less_func,(void*)NULL); 
