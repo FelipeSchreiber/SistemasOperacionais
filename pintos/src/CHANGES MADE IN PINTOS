@@ -1,0 +1,139 @@
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+//in threads.h :
+#include "../devices/timer.h"
+struct thread
+  {
+    /* Owned by thread.c. */
+    tid_t tid;                          /* Thread identifier. */
+    enum thread_status status;          /* Thread state. */
+    char name[16];                      /* Name (for debugging purposes). */
+    uint8_t *stack;                     /* Saved stack pointer. */
+    int priority;                       /* Priority. */
+    struct list_elem allelem;           /* List element for all threads list. */
+
+    /* Shared between thread.c and synch.c. */
+    struct list_elem elem;              /* List element. */
+    
+#    struct list_elem sleeping_elem;          /* List of processes that are sleeping*/
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+    uint32_t *pagedir;                  /* Page directory. */
+#endif
+
+    /* Owned by thread.c. */
+    unsigned magic;                     /* Detects stack overflow. */
+
+#    int64_t waking_time;                /* Time when the thread should be waken up*/
+  };
+
+
+
+/*Function that compares the waking_time of threads a and b, returning true if waking_time a < waking_time b. This function will be used to insert_ordenated*/
+#bool my_less_func (const struct list_elem *a,const struct list_elem *b,void *aux );
+
+/*Function that puts some thread to sleep*/
+#void thread_sleep (struct thread *T,int64_t wakingTime);
+
+/*Function that checks if the first elem from sleeping list has waking time less than current time. If so, removes that elem from sleeping list*/
+#void thread_waking_time(void);
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+
+#in threads.c :
+/* List of processes that are sleeping*/
+static struct list sleeping_list;
+
+static void
+schedule (void) 
+{
+  #thread_waking_time(timer_ticks ());
+  struct thread *cur = running_thread ();
+  struct thread *next = next_thread_to_run ();
+  struct thread *prev = NULL;
+
+  ASSERT (intr_get_level () == INTR_OFF);
+  ASSERT (cur->status != THREAD_RUNNING);
+  ASSERT (is_thread (next));
+
+  if (cur != next)
+    prev = switch_threads (cur, next);
+  thread_schedule_tail (prev);
+}
+
+/*Function that compares the waking_time of threads a and b, returning true if waking_time a < waking_time b. This function will be used to insert_ordenated*/
+#bool my_less_func (const struct list_elem *a,const struct list_elem *b,void *aux )
+#{
+# if(list_entry (a, struct thread, sleeping_elem)->waking_time < list_entry (b, struct thread, sleeping_elem)->waking_time )
+# {
+#  return true;
+# } 
+# return false;
+#}
+
+/*Function that puts some thread to sleep*/
+#void thread_sleep (struct thread *T,int64_t wakingTime)
+#{
+  enum intr_level my_old_level = intr_disable (); 
+ /*old_level should be INTR_ON, if not this code wont be executed due to the previous assert in timer_sleep()*/
+#  T->waking_time = wakingTime;
+#  list_insert_ordered(&sleeping_list,&(T->sleeping_elem),(list_less_func*)my_less_func,(void*)NULL); 
+#  thread_block();
+#  intr_set_level (my_old_level);
+#}
+
+/*Function that checks if the first elem from sleeping list has waking time less than current time. If so, removes that elem from sleeping list*/
+#void thread_waking_time()
+#{
+# enum intr_level my_old_level = intr_disable (); /*old_level should be INTR_ON, if not this code wont be executed due to the previous assert in timer_sleep()*/
+# int keep_checking = 1;
+# while(keep_checking)
+# {
+#	 if(!list_empty(&sleeping_list))
+#	 {
+#   int64_t currentTime = timer_ticks ();//time since OS was booted
+#	  struct thread *t = list_entry( list_front(&sleeping_list),struct thread,sleeping_elem);
+#	  if( t->waking_time < currentTime )
+#	  {
+#	   list_entry(list_pop_front (&sleeping_list),struct thread,allelem);//removes the thread from sleeping_list
+#	   t->waking_time = 0;//reset the waking_time
+#	   thread_unblock(t);//puts the thread in the running_list  
+#	  }
+#    else {keep_checking = 0;}
+#	 } 
+#   else {keep_checking = 0;}
+# }
+# intr_set_level (my_old_level);
+#}
+
+---------------------------------------------------------------------------------------------------------------------------------------------
+//in timer.c :
+
+/* Sleeps for approximately TICKS timer ticks.  Interrupts must
+   be turned on. */
+void
+timer_sleep (int64_t ticks) 
+{
+  int64_t start = timer_ticks ();
+#  struct thread *t = thread_current();
+#  thread_sleep(t,start + ticks);
+  ASSERT (intr_get_level () == INTR_ON);
+  /*while (timer_elapsed (start) < ticks) 
+    thread_yield ();*/
+}
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+UMA OUTRA SOLUCAO SERIA AO INVES DE CHAMAR A FUNCAO "thread_waking_time" EM "schedule() (localizada no arquivo threads.c)" CHAMAR EM "timer_interupt() (localizada em timer.c)". CONTUDO, ESSA 2a OPCAO SERIA MENOS OTIMIZADA (funcao "thread_waking_time" seria chamada A CADA TICK)
+
+/* Timer interrupt handler. */
+static void
+timer_interrupt (struct intr_frame *args UNUSED)
+{
+  ticks++;
+#  //thread_waking_time();
+  thread_tick ();
+}
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
