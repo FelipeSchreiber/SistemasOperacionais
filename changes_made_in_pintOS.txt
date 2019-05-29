@@ -17,6 +17,7 @@ struct thread
     struct list_elem elem;              /* List element. */
     
 #    struct list_elem sleeping_elem;          /* List of processes that are sleeping*/
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -26,6 +27,7 @@ struct thread
     unsigned magic;                     /* Detects stack overflow. */
 
 #    int64_t waking_time;                /* Time when the thread should be waken up*/
+
   };
 
 
@@ -42,8 +44,9 @@ struct thread
 ----------------------------------------------------------------------------------------------------------------------------------------------
 
 #in threads.c :
+
 /* List of processes that are sleeping*/
-static struct list sleeping_list;
+#static struct list sleeping_list;
 
 static void
 schedule (void) 
