@@ -11,13 +11,16 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+		#int prev_priority;									/*Essa variavel eh usada quando formos restaurar a prioridade de uma thread que teve sua prioridade doada de alguma outra*/
+    #int64_t waking_time;                /*Hora que uma thread deve ser acordada*/
+    #struct lock *waiting_for_lock;			/*Essa variavel informa qual o lock que a thread atual esta esperando ser liberado*/
+    #struct list locks_list; 						/*Lista com todos os locks que a thread mantem em sua posse*/
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
     
 #    struct list_elem sleeping_elem;          /* List of processes that are sleeping*/
-
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -25,9 +28,6 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
-
-#    int64_t waking_time;                /* Time when the thread should be waken up*/
-
   };
 
 
@@ -41,29 +41,13 @@ struct thread
 /*Function that checks if the first elem from sleeping list has waking time less than current time. If so, removes that elem from sleeping list*/
 #void thread_waking_time(void);
 
+#void sort_rdy_list(); 
+
 ----------------------------------------------------------------------------------------------------------------------------------------------
 
 #in threads.c :
-
 /* List of processes that are sleeping*/
-#static struct list sleeping_list;
-
-void
-thread_init (void) 
-{
-  ASSERT (intr_get_level () == INTR_OFF);
-
-  lock_init (&tid_lock);
-  list_init (&ready_list);
-  list_init (&all_list);
-#  list_init (&sleeping_list);
-  /* Set up a thread structure for the running thread. */
-  initial_thread = running_thread ();
-  init_thread (initial_thread, "main", PRI_DEFAULT);
-  initial_thread->status = THREAD_RUNNING;
-  initial_thread->tid = allocate_tid ();
-}
-
+static struct list sleeping_list;
 
 static void
 schedule (void) 
@@ -87,7 +71,7 @@ schedule (void)
 #{
 # if(list_entry (a, struct thread, sleeping_elem)->waking_time < list_entry (b, struct thread, sleeping_elem)->waking_time )
 # {
-#  return true;
+#  	return true;
 # } 
 # return false;
 #}
@@ -96,7 +80,6 @@ schedule (void)
 #void thread_sleep (struct thread *T,int64_t wakingTime)
 #{
 #  enum intr_level my_old_level = intr_disable (); 
- /*old_level should be INTR_ON, if not this code wont be executed due to the previous assert in timer_sleep()*/
 #  T->waking_time = wakingTime;
 #  list_insert_ordered(&sleeping_list,&(T->sleeping_elem),(list_less_func*)my_less_func,(void*)NULL); 
 #  thread_block();
@@ -106,25 +89,115 @@ schedule (void)
 /*Function that checks if the first elem from sleeping list has waking time less than current time. If so, removes that elem from sleeping list*/
 #void thread_waking_time()
 #{
-# enum intr_level my_old_level = intr_disable (); /*old_level should be INTR_ON, if not this code wont be executed due to the previous assert in timer_sleep()*/
+# enum intr_level my_old_level = intr_disable (); 
 # int keep_checking = 1;
 # while(keep_checking)
 # {
-#	 if(!list_empty(&sleeping_list))
-#	 {
-#   int64_t currentTime = timer_ticks ();//time since OS was booted
-#	  struct thread *t = list_entry( list_front(&sleeping_list),struct thread,sleeping_elem);
-#	  if( t->waking_time < currentTime )
-#	  {
-#	   list_entry(list_pop_front (&sleeping_list),struct thread,allelem);//removes the thread from sleeping_list
-#	   t->waking_time = 0;//reset the waking_time
-#	   thread_unblock(t);//puts the thread in the running_list  
-#	  }
-#    else {keep_checking = 0;}
-#	 } 
-#   else {keep_checking = 0;}
+#		 if(!list_empty(&sleeping_list))
+#		 {
+#	   int64_t currentTime = timer_ticks ();//time since OS was booted
+#		  struct thread *t = list_entry( list_front(&sleeping_list),struct thread,sleeping_elem);
+#			  if( t->waking_time < currentTime )
+#	 			{
+#			   	list_entry(list_pop_front (&sleeping_list),struct thread,allelem);//removes the thread from sleeping_list
+#			   	t->waking_time = 0;//reset the waking_time
+#			   	thread_unblock(t);//puts the thread in the running_list  
+#			  }
+#		    else {keep_checking = 0;}
+#		 } 
+#	   else {keep_checking = 0;}
 # }
 # intr_set_level (my_old_level);
+#}
+
+void
+thread_unblock (struct thread *t) 
+{
+  enum intr_level old_level;
+  ASSERT (is_thread (t));
+  old_level = intr_disable ();
+  ASSERT (t->status == THREAD_BLOCKED);
+#	list_insert_ordered(&ready_list,&(t->elem),(list_less_func*)my_pri_greater_func,(void*)NULL);//Insere na lista de prontos de forma ordenada, com a prioridade maior na frente
+  t->status = THREAD_READY;
+#	struct thread *cur = thread_current ();
+#	if((t->priority > cur->priority) && (cur != idle_thread))
+#	{
+#		 	thread_yield(); //Se a thread desbloqueada tiver maior prioridade que a atual, faz a preempcao da cpu
+#	}
+  intr_set_level (old_level);
+}
+
+void
+thread_yield (void) 
+{
+  struct thread *cur = thread_current ();
+  enum intr_level old_level;
+  
+  ASSERT (!intr_context ());
+
+  old_level = intr_disable ();
+#	if (cur != idle_thread) //A thread IDLE NUNCA pode estar na fila de prontos
+#	{
+#	 	list_insert_ordered(&ready_list,&(cur->elem),(list_less_func*)my_pri_greater_func,(void*)NULL); //Ao retornar a thread atual para fila de prontos, deve-se inserir de forma ordenada
+#	}
+  print_thread_priority();
+  cur->status = THREAD_READY;
+  schedule ();
+  intr_set_level (old_level);
+}
+
+
+void
+thread_set_priority (int new_priority) 
+{
+  thread_current ()->priority = new_priority;
+  struct thread *t = list_entry( list_front(&ready_list),struct thread,elem);
+#	if(t != NULL && t->priority > new_priority) //Ao mudar a prioridade da thread atual, verifica se a primeira thread da fila de prontas(Isto é, a de maior prioridade) possui prioridade maior do que a que está executando
+#	{
+#		 	thread_yield();
+#	}
+}
+
+
+static void
+init_thread (struct thread *t, const char *name, int priority)
+{
+  enum intr_level old_level;
+
+  ASSERT (t != NULL);
+  ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
+  ASSERT (name != NULL);
+
+  memset (t, 0, sizeof *t);
+  t->status = THREAD_BLOCKED;
+  strlcpy (t->name, name, sizeof t->name);
+  t->stack = (uint8_t *) t + PGSIZE;
+  t->priority = priority;
+#	t->prev_priority = priority; //Setta a prioridade anterior com o mesmo valor da prioridade. ESSE VALOR NUNCA SERÁ ALTERADO. Quando a thread liberar o lock e nao houver mais locks em sua posse, esse valor sera usado para restaurar a sua prioridade antes de ocorrer alguma priority donation
+#	t->waiting_for_lock = NULL; //Lock atual que a thread está aguardando.
+  #list_init (&(t->locks_list)); //Lista de locks em sua posse
+  t->magic = THREAD_MAGIC;
+  old_level = intr_disable ();
+  list_push_back (&all_list, &t->allelem);
+  intr_set_level (old_level);
+}
+
+static struct thread *
+next_thread_to_run (void) 
+{
+  if (list_empty (&ready_list))
+    return idle_thread;
+  else
+  {
+#		list_sort(&ready_list,(list_less_func*)my_pri_greater_func,(void*)NULL); // Garante que a lista esta ordenada e a proxima thread a executar eh a de maior prioridade
+    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+  }
+}
+
+
+#void sort_rdy_list() //funcao que ordena a lista de prontas. Util se quisermos ordenar tal lista em outro escopo ".c" que nao a "thread.c"(a lista, por ser estatica, nao consegue ser acessada diretamente). Usaremos ela em sync.c quando efetuarmos doacao de prioridade
+#{
+#		list_sort(&ready_list,(list_less_func*)my_pri_greater_func,(void*)NULL);
 #}
 
 ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -144,7 +217,7 @@ timer_sleep (int64_t ticks)
 }
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-UMA OUTRA SOLUCAO SERIA AO INVES DE CHAMAR A FUNCAO "thread_waking_time" EM "schedule() (localizada no arquivo threads.c)" CHAMAR EM "timer_interupt() (localizada em timer.c)". CONTUDO, ESSA 2a OPCAO SERIA MENOS OTIMIZADA (funcao "thread_waking_time" seria chamada A CADA TICK)
+UMA OUTRA SOLUCAO SERIA AO INVES DE CHAMAR A FUNCAO "thread_waking_time" EM "schedule() (localizada no arquivo threads.c)" CHAMAR EM "timer_interupt() (localizada em timer.c)". CONTUDO, ESSA 2a OPCAO SERIA MENOS OTIMIZADA (funcao "thread_waking_time" seria chamada A CADA TICK). No entanto, se formos considerar a prioridade das threads, essa opcao eh melhor uma vez que uma thread pode acordar e caso ela tenha prioridade maior do que a thread em execuçao, devera efetuar preempcao da cpu (se chamassemos em schedule a thread em execucao terminaria seu time_slice correspondente e a thread que estava dormindo nao obteria a cpu logo de cara)
 
 /* Timer interrupt handler. */
 static void
@@ -156,5 +229,121 @@ timer_interrupt (struct intr_frame *args UNUSED)
 }
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+//in sync.h
+
+struct lock 
+  {
+    struct thread *holder;      /* Thread holding lock (for debugging). */
+    struct semaphore semaphore; /* Binary semaphore controlling access. */
+#    int priority;		/*Quando uma thread libera um lock, a sua nova prioridade sera aquela correspondente ao lock de maior prioridade de sua lista de locks*/
+#    int id;			/*Apenas para propositos de debug*/
+    struct list_elem lock_elem;  /*Serve para colocar o lock na lista de locks que uma thread mantem*/
+  };
+
+
+#/*Function that compares the priority of locks a and b, returning true if priority a > priority b. This function will be used for donation*/
+#bool my_pri_lock_greater_func (const struct list_elem* a, const struct list_elem *b, void* aux);
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+//in sync.c
+
+void
+sema_down (struct semaphore *sema) 
+{
+  enum intr_level old_level;
+
+  ASSERT (sema != NULL);
+  ASSERT (!intr_context ());
+
+  old_level = intr_disable ();
+  while (sema->value == 0) 
+    {
+#      list_insert_ordered(&sema->waiters,&thread_current ()->elem,(list_less_func*)my_pri_greater_func,(void*)NULL);	//insere ordenado na lista de threads esperando por aquele semaforo. Assim, quando ocorrer sema_up, a thread de maior prioridade(a primeira da fila) será desbloqueada
+      thread_block ();
+    }
+  sema->value--;
+  intr_set_level (old_level);
+}
+
+
+void
+lock_init (struct lock *lock)
+{
+  ASSERT (lock != NULL);
+#  lock->priority = 0;
+#  lock->id = 0;
+  lock->holder = NULL;
+  sema_init (&lock->semaphore, 1);
+}
+
+
+void
+lock_acquire (struct lock *lock)
+{
+  ASSERT (lock != NULL);
+  ASSERT (!intr_context ());
+  ASSERT (!lock_held_by_current_thread (lock));
+  #struct thread *t = thread_current();//thread atual que tenta adquirir o lock
+  #struct thread *holding = lock->holder; //thread que esta na posse do lock atual
+  #struct lock *cur_lock = lock;
+  #t->waiting_for_lock = lock;//processo atual fica esperando pelo lock
+
+  #if(holding == NULL) {
+  #  cur_lock->priority = t->priority;
+  #}
+  #/*Esse for vai percorrendo a cadeia de locks. Por exemplo:
+  #Thread1 possui lock A e thread atual depende do lock A. Portanto se a prioridade da atual for maior que a da Thread1, entao a atual doa a sua prioridade para Thread1. Mas e se a Thread1 estiver esperando por um outro lock B na posse da Thread2? Entao a thread atual efetuará a doacao de prioridade tambem para a Thread2, isto é, se a prioridade da Thread2 for menor*/
+  #for(;holding != NULL && holding->priority < t->priority && cur_lock == NULL; cur_lock = holding->waiting_for_lock) {
+  #   holding = cur_lock->holder
+  #  holding->priority = t->priority;
+  #  sort_rdy_list();//garante que a lista de prontas vai se manter ordenada
+  #  cur_lock->priority = t->priority;//efetua a doacao de prioridade da thread atual para uma thread2 qualquer
+  #  list_sort(&(holding->locks_list), (list_less_func*)my_pri_lock_greater_func, NULL);//garante que a lista de locks da thread2 se mantem ordenada. Isso eh importante pois uma vez que a thread2 liberar o "lock B" ela deve ter a mesma prioridade do "lock C" de maior prioridade da sua lista.
+  #  //vai para o proximo da cadeia.Por exemplo, se o atual for a Thread1, com o lock A e esta esperando pelo lock B, entao o proximo lock a ser analisado eh o B
+  #}
+
+  sema_down (&lock->semaphore);
+  lock->holder = t;
+
+#  //Lock foi adquirido
+#  lock->holder->waiting_for_lock = NULL; 
+  
+#  //Insere lock na lista de locks que aquela thread mantem
+#  list_insert_ordered(&(t->locks_list), &(lock->lock_elem),(list_less_func*)my_pri_lock_greater_func, NULL);
+  
+}
+
+void
+lock_release (struct lock *lock) 
+{
+  ASSERT (lock != NULL);
+  ASSERT (lock_held_by_current_thread (lock));
+  #list_remove(&(lock->lock_elem));//retira o lock da lista de locks que a thread mantem
+  #if( !list_empty(&(lock->holder->locks_list) ) )//a thread detem outros locks, portanto a sua nova prioridade sera a do lock de maior prioridade
+  #{
+	#	list_sort(&(lock->holder->locks_list), (list_less_func*)my_pri_lock_greater_func, NULL); //garante que a lista de locks esta ordenada do maior para o menor em relacao a prioridade
+	#	struct lock *lock_de_maior_prioridade = list_entry( list_front(&(lock->holder->locks_list)), struct lock, lock_elem );
+	#	lock->holder->priority = lock_de_maior_prioridade->priority;
+  #}
+  #else
+  #{
+	#		thread_current()->priority = thread_current()->prev_priority;//a lista esta vazia, portanto a sua prioridade volta a ser a mesma de quando foi criada
+  #}
+  lock->holder = NULL;
+  sema_up (&lock->semaphore);
+}
+
+
+#/*Function that compares the priority of locks a and b, returning true if priority a > priority b. This function will be used for donation*/
+#bool my_pri_lock_greater_func (const struct list_elem* a, const struct list_elem *b, void* aux UNUSED)
+#{
+#  if(list_entry (a, struct lock, lock_elem)->priority > list_entry (b, struct lock, lock_elem)->priority )
+#  {
+#   return true;
+#  }
+#  return false;
+#}
 
 
