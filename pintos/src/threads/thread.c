@@ -28,8 +28,7 @@ static struct list ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
-/* List of processes that are sleeping*/
-static struct list sleeping_list;
+static struct list sleeping_list;          /* List of processes that are sleeping*/
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -95,11 +94,12 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-
+  list_init (&sleeping_list);
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
+  //printf("\nMAIN STATUS:%i\n",initial_thread->status);
   initial_thread->tid = allocate_tid ();
 }
 
@@ -126,7 +126,7 @@ void
 thread_tick (void) 
 {
   struct thread *t = thread_current ();
-
+  
   /* Update statistics. */
   if (t == idle_thread)
     idle_ticks++;
@@ -174,7 +174,6 @@ thread_create (const char *name, int priority,
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
   tid_t tid;
-  enum intr_level old_level;
 
   ASSERT (function != NULL);
 
@@ -187,11 +186,7 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
 
-  /* Prepare thread for first run by initializing its stack.
-     Do this atomically so intermediate values for the 'stack' 
-     member cannot be observed. */
-  old_level = intr_disable ();
-
+  t->waking_time = 0;
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
@@ -207,11 +202,12 @@ thread_create (const char *name, int priority,
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  intr_set_level (old_level);
-
   /* Add to run queue. */
+  enum intr_level old_level;
+  old_level = intr_disable ();
+  //printf("\nIn thread_create: UNBLOCKING %s ...\n",t->name);
+  intr_set_level (old_level);
   thread_unblock (t);
-
   return tid;
 }
 
@@ -226,8 +222,8 @@ thread_block (void)
 {
   ASSERT (!intr_context ());
   ASSERT (intr_get_level () == INTR_OFF);
-
   thread_current ()->status = THREAD_BLOCKED;
+  //printf("\nBLOCKING THREAD:%s...\n",thread_current ()->name);
   schedule ();
 }
 
@@ -243,13 +239,21 @@ void
 thread_unblock (struct thread *t) 
 {
   enum intr_level old_level;
-
   ASSERT (is_thread (t));
-
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  //list_push_back (&ready_list, &t->elem);
+  list_insert_ordered(&ready_list,&(t->elem),(list_less_func*)my_pri_greater_func,(void*)NULL);
   t->status = THREAD_READY;
+  //printf("\nUNBLOCKING %s\n",t->name);
+  struct thread *cur = thread_current ();
+  if((t->priority > cur->priority) && (cur != idle_thread))
+  {
+   //printf("\nIN THREAD UNBLOCK: %s-> priority:%i || %s->priority:%i \n\n",t->name,t->priority,thread_name(),thread_current ()->priority);
+   thread_yield();
+   //t = thread_current();
+   //printf("\nCur thread executing is: %s\n",t->name);
+  }
   intr_set_level (old_level);
 }
 
@@ -319,7 +323,13 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  {
+   //printf("\nPutting %s at the ready list\n",cur->name);
+   //list_push_back (&ready_list, &cur->elem);
+   list_insert_ordered(&ready_list,&(cur->elem),(list_less_func*)my_pri_greater_func,(void*)NULL);
+  }
+  print_thread_priority();
+  //printf("\nSETTING %s STATUS TO READY\n",cur->name);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -347,6 +357,11 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+  struct thread *t = list_entry( list_front(&ready_list),struct thread,elem);
+  if(t != NULL && t->priority > new_priority)
+  {
+   thread_yield();
+  }
 }
 
 /* Returns the current thread's priority. */
@@ -454,6 +469,7 @@ running_thread (void)
 static bool
 is_thread (struct thread *t)
 {
+  //printf("\nCURRENT THREAD MAGIC:%i, should be:%i, is_thread?%s\n",t->magic,THREAD_MAGIC,(t != NULL && t->magic == THREAD_MAGIC)?"YES":"NO");
   return t != NULL && t->magic == THREAD_MAGIC;
 }
 
@@ -462,6 +478,8 @@ is_thread (struct thread *t)
 static void
 init_thread (struct thread *t, const char *name, int priority)
 {
+  enum intr_level old_level;
+
   ASSERT (t != NULL);
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT (name != NULL);
@@ -471,8 +489,13 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->prev_priority = priority;
+  t->waiting_for_lock = NULL;
+  list_init (&(t->locks_list));
   t->magic = THREAD_MAGIC;
+  old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
+  intr_set_level (old_level);
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -499,7 +522,10 @@ next_thread_to_run (void)
   if (list_empty (&ready_list))
     return idle_thread;
   else
+  {
+    list_sort(&ready_list,(list_less_func*)my_pri_greater_func,(void*)NULL);
     return list_entry (list_pop_front (&ready_list), struct thread, elem);
+  }
 }
 
 /* Completes a thread switch by activating the new thread's page
@@ -546,6 +572,10 @@ thread_schedule_tail (struct thread *prev)
       ASSERT (prev != cur);
       palloc_free_page (prev);
     }
+  /*if(cur != idle_thread)
+  {
+   printf("\nCurrent thread is:%s STATUS:%i\n",cur->name,cur->status);
+  }*/
 }
 
 /* Schedules a new process.  At entry, interrupts must be off and
@@ -558,19 +588,21 @@ thread_schedule_tail (struct thread *prev)
 static void
 schedule (void) 
 {
-  thread_waking_time(timer_ticks ());
- 
+  //thread_waking_time();
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
   struct thread *prev = NULL;
-
   ASSERT (intr_get_level () == INTR_OFF);
   ASSERT (cur->status != THREAD_RUNNING);
   ASSERT (is_thread (next));
-
+  
   if (cur != next)
     prev = switch_threads (cur, next);
   thread_schedule_tail (prev);
+  //if(cur != idle_thread && next != idle_thread)
+  //{
+  // printf("\nCurrent thread is:%s STATUS:%i || Next thread to run is: %s\n",cur->name,cur->status,next->name);
+  //}
 }
 
 /* Returns a tid to use for a new thread. */
@@ -592,7 +624,7 @@ allocate_tid (void)
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
 
 /*Function that compares the waking_time of threads a and b, returning true if waking_time a < waking_time b. This function will be used to insert_ordenated*/
-bool my_less_func (const struct list_elem *a,const struct list_elem *b,void *aux )
+bool my_wakingtime_less_func (const struct list_elem *a,const struct list_elem *b,void *aux UNUSED)
 {
  if(list_entry (a, struct thread, sleeping_elem)->waking_time < list_entry (b, struct thread, sleeping_elem)->waking_time )
  {
@@ -601,13 +633,38 @@ bool my_less_func (const struct list_elem *a,const struct list_elem *b,void *aux
  return false;
 }
 
-/*Function that puts some thread to sleep*/
-void thread_sleep (struct thread *T,int64_t wakingTime)
+/*Function that compares the priority of threads a and b, returning true if priority a > priority b. This function will be used for scheduling*/
+bool my_pri_greater_func (const struct list_elem *a,const struct list_elem *b,void *aux UNUSED )
 {
-  enum intr_level my_old_level = intr_disable (); 
- /*old_level should be INTR_ON, if not this code wont be executed due to the previous assert in timer_sleep()*/
+ if(list_entry (a, struct thread, elem)->priority > list_entry (b, struct thread, elem)->priority )
+ {
+  //printf("A FOI INSERIDO: \n");
+  //printf("a-> priority:%i || b->priority:%i\n",list_entry (a, struct thread, elem)->priority, list_entry (b, struct thread, elem)->priority);
+  return true;
+ } 
+ return false;
+}
+
+void print_thread_priority()
+{
+ struct list_elem *e;
+  ASSERT (intr_get_level () == INTR_OFF);
+
+  for (e = list_begin (&ready_list); e != list_end (&ready_list);
+       e = list_next (e))
+    {
+      struct thread *t = list_entry (e, struct thread, elem);
+      //printf("%s-> priority:%i\n",t->name,t->priority);
+    }
+}
+
+/*Function that puts some thread to sleep*/
+void
+thread_sleep (struct thread *T,int64_t wakingTime)
+{
+  enum intr_level my_old_level = intr_disable (); /*old_level should be INTR_ON, if not this code wont be executed due to the previous assert in timer_sleep()*/
   T->waking_time = wakingTime;
-  list_insert_ordered(&sleeping_list,&(T->sleeping_elem),(list_less_func*)my_less_func,(void*)NULL); 
+  list_insert_ordered(&sleeping_list,&(T->sleeping_elem),(list_less_func*)my_wakingtime_less_func,(void*)NULL); 
   thread_block();
   intr_set_level (my_old_level);
 }
@@ -621,20 +678,27 @@ void thread_waking_time()
  {
 	 if(!list_empty(&sleeping_list))
 	 {
-   int64_t currentTime = timer_ticks ();//time since OS was booted
-	  struct thread *t = list_entry( list_front(&sleeping_list),struct thread,sleeping_elem);
-	  if( t->waking_time < currentTime )
-	  {
-	   list_entry(list_pop_front (&sleeping_list),struct thread,allelem);//removes the thread from sleeping_list
-	   t->waking_time = 0;//reset the waking_time
-	   thread_unblock(t);//puts the thread in the running_list  
-	  }
-    else {keep_checking = 0;}
+		  int64_t currentTime = timer_ticks ();//time since OS was booted 
+		  struct thread *t = list_entry( list_front(&sleeping_list),struct thread,sleeping_elem);
+		  if( t->waking_time <= currentTime )
+		  {
+			   list_entry(list_pop_front (&sleeping_list),struct thread,allelem);//removes the thread from sleeping_list
+			   t->waking_time = 0;//reset the waking_time
+			   //printf("%s-> priority:%i || %s->priority:%i \n\n",t->name,t->priority,thread_name(),thread_current ()->priority);
+			   //print_thread_priority();
+		           //printf("\n\n--------------------------------FIM DA LISTA-----------------------------------\n\n");
+			   //printf("\nIn thread_waking_time: UNBLOCKING %s ...\n",t->name);
+			   thread_unblock(t);//puts the thread in the ready_list  
+		  }
+		  else {keep_checking = 0;}
 	 } 
-   else {keep_checking = 0;}
+         else {keep_checking = 0;}
  }
  intr_set_level (my_old_level);
 }
 
-
+void sort_rdy_list()
+{
+	list_sort(&ready_list,(list_less_func*)my_pri_greater_func,(void*)NULL);
+}
 

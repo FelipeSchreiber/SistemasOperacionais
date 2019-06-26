@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 #include "../devices/timer.h"
 
 /* States in a thread's life cycle. */
@@ -89,6 +90,10 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+    int prev_priority;
+    int64_t waking_time;                /* Time when the thread should be waken up*/
+    struct lock *waiting_for_lock;
+    struct list locks_list; 			/* Locks that a thread is holding */
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
@@ -102,8 +107,6 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
-
-    int64_t waking_time;                /* Time when the thread should be waken up*/
   };
 
 /* If false (default), use round-robin scheduler.
@@ -132,6 +135,7 @@ void thread_yield (void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
+void print_thread_priority(void);
 void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
@@ -143,7 +147,11 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 /*Function that compares the waking_time of threads a and b, returning true if waking_time a < waking_time b. This function will be used to insert_ordenated*/
-bool my_less_func (const struct list_elem *a,const struct list_elem *b,void *aux );
+bool my_wakingtime_less_func (const struct list_elem *a,const struct list_elem *b,void *aux );
+
+/*Function that compares the priority of threads a and b, returning true if priority a > priority b. This function will be used for scheduling*/
+bool my_pri_greater_func (const struct list_elem *a,const struct list_elem *b,void *aux );
+
 
 /*Function that puts some thread to sleep*/
 void thread_sleep (struct thread *T,int64_t wakingTime);
@@ -151,5 +159,5 @@ void thread_sleep (struct thread *T,int64_t wakingTime);
 /*Function that checks if the first elem from sleeping list has waking time less than current time. If so, removes that elem from sleeping list*/
 void thread_waking_time(void);
 
-
+void sort_rdy_list(void);
 #endif /* threads/thread.h */
