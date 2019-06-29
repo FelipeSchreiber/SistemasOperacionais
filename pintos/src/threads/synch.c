@@ -32,6 +32,16 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+/*Function that compares the priority of locks a and b, returning true if priority a > priority b. This function will be used for donation*/
+bool my_pri_lock_greater_func (const struct list_elem* a, const struct list_elem *b, void* aux UNUSED)
+{
+  if(list_entry (a, struct lock, lock_elem)->priority > list_entry (b, struct lock, lock_elem)->priority )
+  {
+   return true;
+  }
+  return false;
+}
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -69,7 +79,7 @@ sema_down (struct semaphore *sema)
   while (sema->value == 0) 
     {
       //list_push_back (&sema->waiters, &thread_current ()->elem);
-      list_insert_ordered(&sema->waiters,&thread_current ()->elem,(list_less_func*)my_pri_greater_func,(void*)NULL);	
+      list_insert_ordered (&sema->waiters, &thread_current()->elem,(list_less_func*)my_pri_lock_greater_func, NULL);
       thread_block ();
     }
   sema->value--;
@@ -116,9 +126,9 @@ sema_up (struct semaphore *sema)
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) 
   {
-   struct thread *t = list_entry (list_pop_front (&sema->waiters), struct thread, elem);
-   thread_unblock (t);
-   //printf("\nThread %s with priority %i unblocked\n",t->name,t->priority);
+	  list_sort(&(sema->waiters),(list_less_func*)my_pri_greater_func, NULL);/*Garante que a lista de espera do semaforo
+	  estara em ordem de prioridade*/
+	  thread_unblock (list_entry (list_pop_front (&sema->waiters),struct thread, elem));
   }
   sema->value++;
   intr_set_level (old_level);
@@ -200,34 +210,39 @@ lock_acquire (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
-  struct lock *cur_lock = lock;
-  struct thread *holding = lock->holder; //thread que esta na posse do lock atual
-  struct thread *t = thread_current();//thread atual que tenta adquirir o lock
-  t->waiting_for_lock = lock;//processo atual fica esperando pelo lock
+  /*struct thread *t = thread_current();  t->waiting_for_lock = lock;
+  struct thread *cur_lock_holder = lock->holder;
+  if(cur_lock_holder == NULL) 
+  {
+    lock->priority = t->priority;
+  }*/
 
-  if(holding == NULL) {
-    cur_lock->priority = t->priority;
-  }
   /*Esse for vai percorrendo a cadeia de locks. Por exemplo:
-  Thread1 possui lock A e thread atual depende do lock A. Portanto se a prioridade da atual for maior que a da Thread1, entao a atual doa a sua prioridade para Thread1. Mas e se a Thread1 estiver esperando por um outro lock B na posse da Thread2? Entao a thread atual efetuará a doacao de prioridade tambem para a Thread2, isto é, se a prioridade da Thread2 for menor*/
-  for(;holding != NULL && holding->priority < t->priority && cur_lock == NULL; holding = cur_lock->holder) {
-    holding->priority = t->priority;
-    sort_rdy_list();//garante que a lista de prontas vai se manter ordenada
-    cur_lock->priority = t->priority;//efetua a doacao de prioridade da thread atual para uma thread2 qualquer
-    list_sort(&(holding->locks_list), (list_less_func*)my_pri_lock_greater_func, NULL);//garante que a lista de locks da thread2 se mantem ordenada. Isso eh importante pois uma vez que a thread2 liberar o "lock B" ela deve ter a mesma prioridade do "lock C" de maior prioridade da sua lista.
-    cur_lock = holding->waiting_for_lock;//vai para o proximo da cadeia.Por exemplo, se o atual for a Thread1, com o lock A e esta esperando pelo lock B, entao o proximo lock a ser analisado eh o B
-  }
+  Thread1 possui lock A e thread atual depende do lock A. Portanto se a prioridade da atual for maior que a da Thread1, 
+  entao a atual doa a sua prioridade para Thread1. Mas e se a Thread1 estiver esperando por um outro lock B na posse da 
+  Thread2? Entao a thread atual efetuará a doacao de prioridade tambem para a Thread2, isto é, se a prioridade da Thread2 
+  for menor*/
+  
+
+  /*struct lock *cur_lock;
+  for (cur_lock = lock; cur_lock_holder != NULL && cur_lock_holder->priority < t->priority;cur_lock = cur_lock_holder->waiting_for_lock) 
+  {
+    cur_lock_holder = cur_lock->holder;
+    thread_priority_donate(cur_lock_holder,t->priority);
+    if (cur_lock->priority < t->priority) 
+    {
+      cur_lock->priority = t->priority;
+    }
+    if(cur_lock == NULL) break;
+  }*/
 
   sema_down (&lock->semaphore);
-  lock->holder = t;
   /*if(!list_empty(&(lock->semaphore.waiters)) )
   	printf("\n%s got lock %lu\n",lock->holder->name,lock);*/
-  //Lock foi adquirido
-  lock->holder->waiting_for_lock = NULL; 
   
-  //Insere lock na lista de locks que aquela thread mantem
-  list_insert_ordered(&(t->locks_list), &(lock->lock_elem),(list_less_func*)my_pri_lock_greater_func, NULL);
-  
+  /*list_insert_ordered(&(lock->holder->locks_list), &(lock->lock_elem),(list_less_func*)my_pri_lock_greater_func, NULL);
+  lock->holder->waiting_for_lock=NULL;*/
+  lock->holder = thread_current ();
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -260,12 +275,7 @@ lock_release (struct lock *lock)
 {
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
-  list_remove(&(lock->lock_elem));//retira o lock da lista de locks que a thread mantem
-  if(lock->id == 13 )
-  {
-  	printf("\nThread %s prev priority %i\n",lock->holder->name,lock->holder->priority);
-  }
-  if( !list_empty(&(lock->holder->locks_list) ) )//a thread detem outros locks, portanto a sua nova prioridade sera a do lock de maior prioridade
+  /*if( !list_empty(&(lock->holder->locks_list) ) )//a thread detem outros locks, portanto a sua nova prioridade sera a do lock de maior prioridade
   {
 	list_sort(&(lock->holder->locks_list), (list_less_func*)my_pri_lock_greater_func, NULL); 
 	struct lock *lock_de_maior_prioridade = list_entry( list_front(&(lock->holder->locks_list)), struct lock, lock_elem );
@@ -273,14 +283,14 @@ lock_release (struct lock *lock)
   }
   else
   {
-	thread_current()->priority = thread_current()->prev_priority;//a lista esta vazia, portanto a sua prioridade volta a ser a mesma de quando foi criada
-  }
-  lock->holder = NULL;
+	struct thread *t = thread_current();
+	t->priority = t->prev_priority;//a lista esta vazia, portanto a sua prioridade volta a ser a mesma de quando foi criada
+  }*/
   /*if(lock->id == 13 )
   {
   	printf("\n%s with priority %i release lock. Next to run is: %s with priority %i\n",lock->holder->name,lock->holder->priority,list_entry (list_front (&lock->semaphore.waiters),struct thread, elem)->name,list_entry (list_front (&lock->semaphore.waiters),struct thread, elem)->priority);
   }*/
-  //lock->holder = NULL;
+  lock->holder = NULL;
   sema_up (&lock->semaphore);
 }
 
@@ -369,17 +379,6 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
     sema_up (&list_entry (list_pop_front (&cond->waiters),
                           struct semaphore_elem, elem)->semaphore);
 }
-
-/*Function that compares the priority of locks a and b, returning true if priority a > priority b. This function will be used for donation*/
-bool my_pri_lock_greater_func (const struct list_elem* a, const struct list_elem *b, void* aux UNUSED)
-{
-  if(list_entry (a, struct lock, lock_elem)->priority > list_entry (b, struct lock, lock_elem)->priority )
-  {
-   return true;
-  }
-  return false;
-}
-
 
 /* Wakes up all threads, if any, waiting on COND (protected by
    LOCK).  LOCK must be held before calling this function.
