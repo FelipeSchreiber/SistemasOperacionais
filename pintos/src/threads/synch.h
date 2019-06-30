@@ -8,6 +8,7 @@
 /*Function that compares the priority of locks a and b, returning true if priority a > priority b. This function will be used for donation*/
 bool my_pri_lock_greater_func (const struct list_elem* a, const struct list_elem *b, void* aux);
 
+//bool my_pri_cond_greater_func (const struct list_elem *a, const struct list_elem *b, void *aux);
 
 /* A counting semaphore. */
 struct semaphore 
