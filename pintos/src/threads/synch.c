@@ -42,6 +42,20 @@ bool my_pri_lock_greater_func (const struct list_elem* a, const struct list_elem
   return false;
 }
 
+
+/*
+bool my_pri_cond_greater_func (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+  struct semaphore_elem *sa = list_entry (a, struct semaphore_elem, elem);
+  struct semaphore_elem *sb = list_entry (b, struct semaphore_elem, elem);
+  if ( list_entry(list_front(&sa->semaphore.waiters), struct thread, elem)->priority > list_entry(list_front(&sb->semaphore.waiters), struct thread, elem)->priority )
+  {
+    return true;
+  }
+  return false;
+}*/
+
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -79,7 +93,7 @@ sema_down (struct semaphore *sema)
   while (sema->value == 0) 
     {
       //list_push_back (&sema->waiters, &thread_current ()->elem);
-      list_insert_ordered (&sema->waiters, &thread_current()->elem,(list_less_func*)my_pri_lock_greater_func, NULL);
+      list_insert_ordered (&sema->waiters, &thread_current()->elem,(list_less_func*)my_pri_greater_func, NULL);
       thread_block ();
     }
   sema->value--;
@@ -126,8 +140,7 @@ sema_up (struct semaphore *sema)
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) 
   {
-	  list_sort(&(sema->waiters),(list_less_func*)my_pri_greater_func, NULL);/*Garante que a lista de espera do semaforo
-	  estara em ordem de prioridade*/
+	  list_sort(&(sema->waiters),(list_less_func*)my_pri_greater_func, NULL);
 	  thread_unblock (list_entry (list_pop_front (&sema->waiters),struct thread, elem));
   }
   sema->value++;
@@ -218,12 +231,8 @@ lock_acquire (struct lock *lock)
   }*/
 
   /*Esse for vai percorrendo a cadeia de locks. Por exemplo:
-  Thread1 possui lock A e thread atual depende do lock A. Portanto se a prioridade da atual for maior que a da Thread1, 
-  entao a atual doa a sua prioridade para Thread1. Mas e se a Thread1 estiver esperando por um outro lock B na posse da 
-  Thread2? Entao a thread atual efetuará a doacao de prioridade tambem para a Thread2, isto é, se a prioridade da Thread2 
-  for menor*/
-  
-
+  Thread1 possui lock A e thread atual depende do lock A. Portanto se a prioridade da atual for maior que a da Thread1, entao a atual doa a sua prioridade para Thread1. Mas e se a Thread1 estiver esperando por um outro lock B na posse da Thread2? Entao a thread atual efetuará a doacao de prioridade tambem para a Thread2, isto é, se a prioridade da Thread2 for menor*/
+ 
   /*struct lock *cur_lock;
   for (cur_lock = lock; cur_lock_holder != NULL && cur_lock_holder->priority < t->priority;cur_lock = cur_lock_holder->waiting_for_lock) 
   {
