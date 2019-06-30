@@ -1,0 +1,244 @@
+			+--------------------+
+			|        CS 140      |
+			| PROJECT 1: THREADS |
+			|   DESIGN DOCUMENT  |
+			+--------------------+
+				   
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Felipe Schreiber Fernandes schreiber.felipe@poli.ufrj.br
+Julia Togashi de Miranda jutogashi@poli.ufrj.br
+
+---- PRELIMINARIES ----
+
+>> Boa parte do codigo feito para o problema 2 de priority scheduling estava afetando outros testes. Portanto optou-se por deixá-lo comentado, embora falaremos de suas ideias principais aqui. O mesmo vale para a mlfq.
+
+			     ALARM CLOCK
+			     ===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Dentro de threads.c acrescentamos "static struct list sleeping_list", que nada mais é do que uma lista que mantém as threads que estão dormindo.
+Dentro da struct thread acrescentamos o campo "int64_t waking_time" e "struct list_elem sleeping_elem", para informar o tempo absoluto que uma thread deve acordar e para inserir a thread na lista mencionada anteriormente. 
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+	Primeiramente computamos o tempo até o qual a thread deve dormir, pegando o tempo atual (fornecido pela timer_ticks () ) e somamos com o delta de tempo que desejamos que ela durma. Entao chamamos a funcao "thread_sleep()" com o valor calculado e um ponteiro para a thread atual. Essa funcao insere de forma ordenada na lista de threads que estão dormindo e faz uma chamada a thread_block em seguida.
+	Quando ocorre uma interrupção por tempo, efetua-se uma chamada para a função que acorda todas as threads cujo tempo de dormir já acabou. Uma outra alternativa seria chamar essa função apenas quando fosse chamado o escalonador, ou seja, quando a thread atual parasse de executar. Essa forma seria um pouco mais eficiente pois não chamaria a cada tick, e sim a cada 4 ticks. No entanto, quando uma thread de maior é acordada ela deve parar a thread que está executando atualmente. Implementando dessa segunda forma levaria à um delay na preempção da cpu. Portanto optou-se pela primeira.
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+Nenhum. Poderíamos se fizéssemos a chamada da função que acorda as threads da lista de dormir apenas numa chamada de schedule, conforme discutido anteriormente.
+
+---- SYNCHRONIZATION ----
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+
+Desabilitamos as interrupções e as reabilitamos entrarmos e sairmos dessa função. Outra solução seria ter feito utilizando dois lock's, um para a região crítica e outro que atuaria como guarda do lock principal.  
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+
+Desabilitamos as interrupções e as reabilitamos quando fazemos chamada à timer_sleep. Logo as interrupcoes por tempo nao ocorrem. 
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+Foi mais prático de solucionarmos o problema da região crítica. Caso optássemos por utilizar lock, evitar a condição de corrida quando ocorrese interrupção por tempo durante a chamada de timer_sleep seria mais complexo. Teríamos de desabilitar a interrupção, e recairíamos no mesmo problema, exceto provavelmente com uma refião crítica menor (apenas inserir na lista de threads que estão dormindo e chamada de thread_block).
+
+			 PRIORITY SCHEDULING
+			 ===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Adcionamos à estrutura thread:
+---int prev_priority: Esse membro é inicializado com o valor da priridade inicial da thread e utilizado para recuperarmos o valor da prioridade da thread quando ocorre doação (isto é, quando o lock é liberado)
+
+---struct lock *waiting_for_lock: Esse membro informa qual lock a thread atual está esperando. Dessa forma conseguimos achar a sequência
+de threads que precisam ter a prioridade aumentada.
+
+---struct list locks_list: Lista de locks que uma thread mantém em sua posse. Quando uma thread liberar um lock, sua prioridade será settada com o valor do lock de maior prioridade
+
+
+Adcionamos à estrutura lock:
+---int priority: Prioridade do lock. Quando houver doacao de prioridade, essa prioridade sera settada com o valor da prioridade da thread que está doando. Quando o lock for adquirido esse valor é settado com o valor priority da thread que o adquiriu.
+
+---int id: Apenas para propositos de debug. Quando quisermos saber a respeito de um lock especifico, se ele for liberado ou obtido, basta settar esse valor com qualquer um desejado e adcionar prints. Por default ele tem valor 0.
+
+---struct list_elem lock_elem: Serve para colocar o lock na lista de locks que uma thread mantem
+
+
+>> B2: Explain the data structure used to track priority donation.
+>> Use ASCII art to diagram a nested donation.  (Alternately, submit a
+>> .png file.)
+
+Utilizamos um ponteiro para o lock que a thread está esperando ser liberado. Assim, conseguimos mapear a cadeia de threads e aumentarmos as suas respectivas prioridades. Suponha que tenhamos o seguinte cenário: a thread H de alta prioridade espera pelo lock A que a thread M de média prioridade possui e essa por sua vez espera pelo lock B que uma thread L de baixa prioridade detém. Logo:
+
+thread H                                 lock A -> holder = thread M             lock B -> holder = thread L
+{                                        {                                       {
+	waiting_for_lock = lock A ----->  	waiting_for_lock = lock B ----->	waiting_for_lock = NULL
+}                                        }                                       }
+
+Dessa forma, usando os campos waiting_for_lock da thread e lock holder conseguimos percorrer a lista de doações.
+
+---- ALGORITHMS ----
+
+>> B3: How do you ensure that the highest priority thread waiting for
+>> a lock, semaphore, or condition variable wakes up first?
+
+Inserimos de forma ordenada na lista de waiters do semáforo durante a chamada sema_down. Criou-se uma função que compara a prioridade de threads e chamamos a função list_insert_ordered cujos argumentos são um ponteiro para a função de comparação e a lista "waiters" do semáforo. Além disso, como pode ocorrer doação de prioridade, chamamos list_sort antes de acordarmos a thread que está na frente da lista (e portanto de maior prioridade).
+
+>> B4: Describe the sequence of events when a call to lock_acquire()
+>> causes a priority donation.  How is nested donation handled?
+
+Passo 1: Pega o lock atual e a thread que está em sua guarda
+Passo 2: Verifica se a prioridade da thread atual é maior que a da thread que está em guarda do lock. Se sim, efetua doação (aumenta prioridade da thread que está em posse do lock). O mesmo é feito para o lock atual (que tem então sua prioridade aumentada). 
+Passo 3: Atualiza o ponteiro pro lock atual com o lock que a thread (em posse do lock atual) está aguardando.
+Passo 4: Lock atual é nulo ou prioridade da thread em posse do lock atual é maior do que a da thread atual? Se sim, vai para o passo 5. Senão volta para o passo 1.
+Passo 5: Thread atual finalmente consegue o lock. O lock é então inserido de forma ordenada (conforme sua prioridade) na lista de locks que a thread atual possui.
+
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+
+Verifica se lista de locks que a thread atual detém está vazia. Se sim restaura a prioridade da thread com seu valor original. Senão sua próxima prioridade será a mesma do seu lock de maior prioridade. Para esse último caso ordena a sua lista de locks conforme a prioridade e o que encabeça a lista será usado para definir a prioridade.
+
+---- SYNCHRONIZATION ----
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+
+Isso pode ocorrer se houver interrupção por tempo durante a chamada de thread_set_priority. Dessa forma não é possível usar lock para resolver o problema. Desabiltamos, portanto, as interrupções.
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+			  ADVANCED SCHEDULER
+			  ==================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Incluiu-se o arquivo fixed-point.h contendo a implementação de algumas operações com ponto flutuante. 
+Definiou-se o tipo: 
+	typedef int fixed_p;
+      	E também:
+	#define SHIFT_AMOUNT 16//os 16 bits menos significativos serao usados para a parte fracionaria
+
+Adcionamos a seguinte variável global em thread.c:
+
+fixed_p load_avg: 
+	Média móvel da quantidade de threads prontas para executar(em ponto fixo). Inicialmente com valor 0, a cada segundo ela 
+é atualizada segundo a fórmula:
+		load_avg= (59/60)*load_avg+ (1/60)*ready_threads (onde ready_threads é a quantidade de threads prontas para executar)
+
+Na struct thread acrescentamos:
+
+fixed_p recent_cpu: 
+	Estima o tempo de cpu usado pela thread recentemente segundo a formula:
+		recent_cpu= (2*load_avg)/(2*load_avg+ 1) *recent_cpu+nice 
+  
+	Inicialmente esse valor é 0 quando a primeira thread é criada. Nos demais casos tem o mesmo valor que a thread pai. Cada vez que ocorre interrupção por tempo, esse valor é incrementado em uma unidade para a thread em execução, a menos que seja a idle_thread. Além disso, a cada um segundo esse valor é recalculado para todas as threads.
+
+int nice: Determina o quão "legal" uma thread é com as outras na hora de ceder a cpu. Todas as threads começam com esse valor em 0. 
+
+Esses dois novos membros da thread serão usados para mudar a sua prioridade dinamicamente segundo a fórmula: 
+priority= PRI_MAX - (recent_cpu/ 4) - (nice* 2)  
+
+---- ALGORITHMS ----
+
+>> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
+>> has a recent_cpu value of 0.  Fill in the table below showing the
+>> scheduling decision and the priority and recent_cpu values for each
+>> thread after each given number of timer ticks:
+
+timer  recent_cpu    priority   thread
+ticks   A   B   C   A   B   C   to run
+-----  --  --  --  --  --  --   ------
+ 0      0   0   0  63  61  59    A
+ 4      4   0   0  62  61  59    A
+ 8      8   0   0  61  61  59    B
+12      8   4   0  61  60  59    A
+16     12   4   0  60  60  59    B
+20     12   8   0  60  59  59    A
+24     16   8   0  59  59  59    C
+28     16   8   4  59  59  58    B
+32     16  12   4  59  58  58    A
+36     20  12   4  58  58  58    C
+
+>> C3: Did any ambiguities in the scheduler specification make values
+>> in the table uncertain?  If so, what rule did you use to resolve
+>> them?  Does this match the behavior of your scheduler?
+
+Sim, quando prioridades são iguais. Nesse caso escolhemos dar prioridade àquela que possui menos tempo de cpu usado.
+
+>> C4: How is the way you divided the cost of scheduling between code
+>> inside and outside interrupt context likely to affect performance?
+
+---- RATIONALE ----
+
+>> C5: Briefly critique your design, pointing out advantages and
+>> disadvantages in your design choices.  If you were to have extra
+>> time to work on this part of the project, how might you choose to
+>> refine or improve your design?
+
+>> C6: The assignment explains arithmetic for fixed-point math in
+>> detail, but it leaves it open to you to implement it.  Why did you
+>> decide to implement it the way you did?  If you created an
+>> abstraction layer for fixed-point math, that is, an abstract data
+>> type and/or a set of functions or macros to manipulate fixed-point
+>> numbers, why did you do so?  If not, why not?
+
+Criou-se o arquivo fixed-point.h que oferece algumas macros para manipular numeros em ponto fixo quando necessario. Algumas operações do
+tipo multiplicação/divisão de um ponto fixo por um inteiro foram omitidos pois pode ser feito diretamente. Já quando os dois operandos
+são pontos fixos precisamos implementá-los explicitamente.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+Implementar o alarme e o priority scheduling foi relativamente simples. Já a parte de implementar doação de prioridade foi mais trabalhosa. O advanced scheduler era o mais difícil. 
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+Sim. Na parte de doação de prioridade o SO devia estar ciente de uma possível cadeia de dependencia entre as threads.
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
